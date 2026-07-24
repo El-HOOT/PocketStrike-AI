@@ -245,6 +245,15 @@ def main():
     try:
         with open("config.json", "w") as f:
             json.dump(config, f, indent=4)
+        try:
+            # config.json holds plaintext API keys and the Telegram bot token —
+            # restrict to owner read/write only so other apps/processes on the
+            # device can't read them off disk. Best-effort: some filesystems
+            # (e.g. certain SD card mounts) don't support unix permission bits,
+            # so this shouldn't block setup from completing if it fails.
+            os.chmod("config.json", 0o600)
+        except Exception:
+            pass
         print_header()
         print(f"{GREEN}Success! Configuration saved to config.json.{NC}\n")
         print(f"{CYAN}Configuration Summary:{NC}")
