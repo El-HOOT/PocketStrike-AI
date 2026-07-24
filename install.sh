@@ -59,7 +59,7 @@ fi
 
 # 4. Install Flask and Requests
 echo -e "\n${BLUE}⚡ [3/4] Installing Python dependency layers...${NC}"
-pip install flask requests
+pip install flask requests bashlex
 
 # 5. Make scripts executable
 echo -e "\n${BLUE}⚡ [4/4] Setting execution system permissions...${NC}"
