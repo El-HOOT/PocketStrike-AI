@@ -968,6 +968,111 @@ def run_python_script(script_name, args=None):
         return f"Error running script: {str(e)}"
 
 # =======================================================
+# COMMAND SAFETY CLASSIFIER
+# Parses commands via their real bash grammar (bashlex) instead of naive
+# substring matching, so flag order/spelling/long-vs-short-form variants
+# of a dangerous command are all caught the same way, and legitimate
+# commands that merely *contain* a dangerous-looking substring (e.g.
+# `grep 'rm -rf'`, `echo 'rm -rf /' > note.txt`) are correctly allowed.
+# Falls back to a conservative heuristic if bashlex is unavailable.
+# =======================================================
+try:
+    import bashlex
+    _BASHLEX_AVAILABLE = True
+except ImportError:
+    _BASHLEX_AVAILABLE = False
+
+def _rm_is_recursive_and_forced(argv):
+    """True if the rm invocation combines recursive + force in any flag form:
+    -rf, -fr, -r -f, --recursive --force, -r --force, combined clusters like -rfv, etc."""
+    flags = set()
+    for a in argv[1:]:
+        if a.startswith("--"):
+            flags.add(a)
+        elif a.startswith("-") and len(a) > 1:
+            for ch in a[1:]:
+                flags.add("-" + ch)
+    recursive = "-r" in flags or "-R" in flags or "--recursive" in flags
+    force = "-f" in flags or "--force" in flags
+    return recursive and force
+
+def _classify_simple_command(argv):
+    """Given a parsed argv (already shell-unescaped by bashlex), decide if this
+    specific command invocation is destructive enough to block.
+    Returns (blocked: bool, reason: str)."""
+    if not argv:
+        return False, ""
+    cmd = argv[0].rsplit("/", 1)[-1]  # strip any leading path, e.g. /bin/rm -> rm
+
+    if cmd == "rm" and _rm_is_recursive_and_forced(argv):
+        return True, f"rm with combined recursive+force flags (args: {argv[1:]})"
+
+    if cmd == "mkfs" or cmd.startswith("mkfs."):
+        return True, "filesystem format command (mkfs)"
+
+    if cmd == "dd" and any(a.startswith("if=") or a.startswith("of=") for a in argv[1:]):
+        return True, "raw disk-level dd read/write operation"
+
+    if cmd == "shred":
+        return True, "secure-delete/shred command"
+
+    if cmd == "mv" and any(a == "/dev/null" or a.startswith("/dev/") for a in argv[1:]):
+        return True, f"mv targeting a device node ({[a for a in argv[1:] if a.startswith('/dev/')]})"
+
+    if cmd == "find" and ("-delete" in argv or ("-exec" in argv and "rm" in argv)):
+        return True, "find combined with -delete or -exec rm"
+
+    return False, ""
+
+def _walk_ast_for_danger(node, findings):
+    """Recursively walk a bashlex AST, checking every simple 'command' node
+    encountered anywhere — inside pipelines, &&/||/; lists, and subshells —
+    so a dangerous command can't hide behind a pipe or compound operator."""
+    if node is None:
+        return
+    if getattr(node, "kind", None) == "command":
+        argv = [p.word for p in node.parts if getattr(p, "kind", None) == "word"]
+        blocked, reason = _classify_simple_command(argv)
+        if blocked:
+            findings.append((argv, reason))
+    for attr in ("parts", "list", "commands"):
+        children = getattr(node, attr, None)
+        if children:
+            for child in children:
+                _walk_ast_for_danger(child, findings)
+
+def is_command_dangerous(cmd_str):
+    """Returns (blocked: bool, reasons: list[str]). This is the single entry
+    point used by StatefulShell.execute() to decide whether to run a command."""
+    if _BASHLEX_AVAILABLE:
+        findings = []
+        try:
+            trees = bashlex.parse(cmd_str)
+        except Exception:
+            # Text that isn't valid shell syntax can still be executed by a real
+            # shell (e.g. via here-docs or shell-specific extensions bashlex
+            # doesn't model) — err conservative rather than silently allow it.
+            legacy_tokens = ["rm -rf", "rm -f /", "mkfs", "dd if=", "shred "]
+            for t in legacy_tokens:
+                if t in cmd_str:
+                    return True, [f"unparseable command contains high-risk token '{t}'"]
+            return False, []
+        for tree in trees:
+            _walk_ast_for_danger(tree, findings)
+        if findings:
+            return True, [f"{reason}: `{' '.join(argv)}`" for argv, reason in findings]
+        return False, []
+    else:
+        # bashlex not installed — fall back to the original literal-token check
+        # rather than failing open. Less precise, but at least as strict as before.
+        forbidden_tokens = ["rm -rf", "rm -f /", "mkfs", "dd if="]
+        for token in forbidden_tokens:
+            if token in cmd_str:
+                return True, [f"forbidden token '{token}' (bashlex not installed — run: pip install bashlex --break-system-packages)"]
+        return False, []
+      
+
+# =======================================================
 # STATEFUL BACKGROUND SHELL SESSION CONTROLLER
 # =======================================================
 class StatefulShell:
@@ -1017,11 +1122,13 @@ class StatefulShell:
             print(f"Failed to initialize stateful shell: {str(e)}")
 
     def execute(self, cmd_str, timeout=30):
-        # Safety token validation
-        forbidden_tokens = ["rm -rf", "rm -f /", "mkfs", "dd if="]
-        for token in forbidden_tokens:
-            if token in cmd_str:
-                return f"Error: Command execution blocked. Forbidden token: '{token}'"
+        # Safety validation: parse the command's real bash grammar instead of
+        # matching raw substrings, so flag reordering/long-form/split-flag
+        # variants of a dangerous command are caught, and commands that only
+        # *mention* a dangerous string (grep, echo, comments) are not blocked.
+        blocked, reasons = is_command_dangerous(cmd_str)
+        if blocked:
+            return "Error: Command execution blocked for safety.\n" + "\n".join(f"  - {r}" for r in reasons)
                 
         if not self.process or self.process.poll() is not None:
             # Restart shell if it crashed or terminated
