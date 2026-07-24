@@ -964,8 +964,7 @@ def run_python_script(script_name, args=None):
     except Exception as e:
         return f"Error running script: {str(e)}"
 
-    except Exception as e:
-        return f"Error running script: {str(e)}"
+   
 
 # =======================================================
 # COMMAND SAFETY CLASSIFIER
