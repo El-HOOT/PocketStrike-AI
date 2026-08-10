@@ -2761,11 +2761,13 @@ def execute_root_command(command):
         if not su_exists:
             return "Error: SuperUser 'su' binary not found. This tool requires a rooted Android device."
             
-        # Safety token validation (prevent basic bricking scenarios)
-        forbidden_tokens = ["rm -rf", "rm -f /", "mkfs", "dd if="]
-        for token in forbidden_tokens:
-            if token in command:
-                return f"Error: Root command blocked. Forbidden token: '{token}'"
+        # Safety validation: same AST-based classifier used for the non-root
+        # shell (execute_termux_command). This path runs as root, so a command
+        # that slips past here is strictly worse than one that slips past the
+        # non-root shell — it gets the same scrutiny, not less.
+        blocked, reasons = is_command_dangerous(command)
+        if blocked:
+            return "Error: Root command execution blocked for safety.\n" + "\n".join(f"  - {r}" for r in reasons)
                 
         # Run command with su -c
         # On Android, su -c "command" runs the command as root.
