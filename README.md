@@ -6,11 +6,11 @@ The current security review handles 2 (1 blind, 1 naive) flaws in the original c
 
 ### Merge?
 
-whether this's something the original author considers important to merge or not is non clear: 
+whether this's something the original author considers important to merge or not is unclear: 
 
--He didn't review the fork formally
--Didn't acknowledge or defend any of the uncovered vulnerabilities
--Didn't reply or comment on an issue asking him to toggle on security reviews for this repository
+- He didn't review the fork formally
+- Didn't acknowledge or defend any of the uncovered vulnerabilities
+- Didn't reply or comment on an issue asking him to toggle on security reviews for this repository
 
 ### Does it matter?
 
